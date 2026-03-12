@@ -1,0 +1,295 @@
+{
+  "name": "MDM — Cadastro via Files API v3",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "MDM — Solicitação de Cadastro de Item",
+        "formDescription": "Envie a proposta comercial em PDF para extrair os itens automaticamente.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Solicitante",
+              "fieldType": "text",
+              "requiredField": true,
+              "fieldId": "solicitante"
+            },
+            {
+              "fieldLabel": "E-mail do solicitante",
+              "fieldType": "email",
+              "requiredField": true,
+              "fieldId": "email_solicitante"
+            },
+            {
+              "fieldLabel": "Proposta Comercial (PDF)",
+              "fieldType": "file",
+              "requiredField": true,
+              "fieldId": "proposta_comercial",
+              "acceptFileTypes": ".pdf",
+              "multipleFiles": false
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-01-form",
+      "name": "01 — Formulário",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [240, 300],
+      "webhookId": "mdm-filesapi-v3"
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "fields": {
+          "values": [
+            {
+              "name": "solicitante",
+              "type": "stringValue",
+              "value": "={{ $json.solicitante }}"
+            },
+            {
+              "name": "email_solicitante",
+              "type": "stringValue",
+              "value": "={{ $json.email_solicitante }}"
+            }
+          ]
+        },
+        "include": "none"
+      },
+      "id": "node-02a-set",
+      "name": "02a — Salvar Campos Texto",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/files",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "anthropic-beta",
+              "value": "files-api-2025-04-14"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "file",
+              "parameterType": "formBinaryData",
+              "inputDataFieldName": "={{ Object.keys($binary)[0] }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "node-02b-upload",
+      "name": "02b — Upload PDF (Files API)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 440],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_AQUI",
+          "name": "Anthropic x-api-key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "id": "node-03-merge",
+      "name": "03 — Merge Campos + File ID",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst j = item.json;\n\nconst fileId = j.id || '';\nif (!fileId) {\n    throw new Error('file_id não encontrado. Campos: ' + JSON.stringify(Object.keys(j)));\n}\n\nitem.json.claude_body = JSON.stringify({\n    model: 'claude-sonnet-4-5-20250929',\n    max_tokens: 8096,\n    messages: [{\n        role: 'user',\n        content: [\n            {\n                type: 'document',\n                source: {\n                    type: 'file',\n                    file_id: fileId\n                }\n            },\n            {\n                type: 'text',\n                text: `Você é especialista em MDM (Master Data Management), classificações fiscais brasileiras e plano de contas contábil (NBC TG).\n\nAnalise esta proposta comercial e extraia TODOS os itens/produtos/serviços listados.\n\nPara cada item retorne os campos abaixo. Use seu conhecimento técnico para preencher os campos de classificação quando não estiverem explícitos na proposta.\n\nCAMPOS OBRIGATÓRIOS:\n- codigo: código do produto conforme proposta (string)\n- nome: nome comercial completo (string, máx 120 chars)\n- descricao_curta: resumo técnico em até 80 caracteres (string)\n- descricao_longa: especificação técnica detalhada (string)\n- unidade: unidade de medida (UN, KG, M, L, CX, KWP, etc.)\n- categoria: categoria do produto (ex: Energia Solar, Cabos e Conectores, Estrutura, Serviços, etc.)\n- preco_unitario: valor unitário como número sem símbolo de moeda (ex: 1250.00)\n- fabricante: nome do fabricante ou fornecedor conforme proposta\n\nCLASSIFICAÇÕES FISCAIS (use seu conhecimento, busque o mais específico possível):\n- ncm: Nomenclatura Comum do Mercosul — código de 8 dígitos com pontos (ex: 8541.40.16) para produtos físicos; string vazia para serviços puros\n- unspsc_codigo_completo: UNSPSC (Universal Standard Products and Services Classification) — código completo de 8 dígitos sem separadores (ex: 26111702); escolha o código de nível Commodity mais específico disponível\n- nbsc: NBS (Nomenclatura Brasileira de Serviços, Intangíveis e Outras Operações) — código completo com pontos (ex: 1.0301.01.10) para serviços; string vazia para produtos físicos\n\nCLASSIFICAÇÃO CONTÁBIL (sugira baseado no tipo de bem/serviço, seguindo o Plano de Contas padrão NBC TG):\n- conta_contabil: código e nome da conta contábil mais adequada. Use os padrões:\n  * Equipamentos/bens de capital para uso próprio → \"1.2.3.01 - Equipamentos\"\n  * Mercadorias/materiais para revenda → \"1.1.3.01 - Estoques de Mercadorias\"\n  * Materiais de consumo → \"1.1.3.02 - Materiais de Consumo\"\n  * Serviços de instalação/manutenção → \"3.2.1.05 - Despesas com Serviços de Terceiros PJ\"\n  * Serviços de engenharia/projetos → \"3.2.1.06 - Despesas com Serviços Técnicos PJ\"\n- natureza_contabil: natureza da conta. Use exatamente um dos valores:\n  * \"ATIVO CIRCULANTE\" (estoques, materiais)\n  * \"ATIVO NÃO CIRCULANTE\" (equipamentos, imobilizado)\n  * \"DESPESA OPERACIONAL\" (serviços, manutenção)\n  * \"CUSTO\" (custo de mercadoria vendida)\n\nRetorne APENAS JSON válido, sem markdown, sem texto adicional:\n{\"itens\": [{\"codigo\": \"\", \"nome\": \"\", \"descricao_curta\": \"\", \"descricao_longa\": \"\", \"unidade\": \"\", \"categoria\": \"\", \"preco_unitario\": 0, \"fabricante\": \"\", \"ncm\": \"\", \"unspsc_codigo_completo\": \"\", \"nbsc\": \"\", \"conta_contabil\": \"\", \"natureza_contabil\": \"\"}]}`\n            }\n        ]\n    }]\n});\n\nreturn item;"
+      },
+      "id": "node-04-build",
+      "name": "04 — Montar Requisição Claude",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "anthropic-beta",
+              "value": "files-api-2025-04-14"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.claude_body }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "node-05-claude",
+      "name": "05 — Chamar Claude API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "CONFIGURE_AQUI",
+          "name": "Anthropic x-api-key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const resp = $input.first().json;\n\nlet raw = '';\ntry {\n    raw = resp.content[0].text;\n} catch(e) {\n    throw new Error('Resposta inesperada da Claude API: ' + JSON.stringify(resp).substring(0, 400));\n}\n\nraw = raw.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim();\n\nlet parsed;\ntry {\n    parsed = JSON.parse(raw);\n} catch(e) {\n    throw new Error('Resposta não é JSON válido. Início: ' + raw.substring(0, 400));\n}\n\nconst itens = parsed.itens || [];\nif (!itens.length) {\n    throw new Error('Nenhum item encontrado. Resposta: ' + raw.substring(0, 400));\n}\n\nconst campos = $('04 — Montar Requisição Claude').first().json;\nconst hoje = new Date().toLocaleDateString('pt-BR');\n\nreturn itens.map(i => ({\n    json: {\n        data_solicitacao:      hoje,\n        solicitante:           String(campos.solicitante           || ''),\n        email_solicitante:     String(campos.email_solicitante     || ''),\n        status_aprovacao:      'PENDENTE',\n        codigo:                String(i.codigo                || ''),\n        nome:                  String(i.nome                  || ''),\n        descricao_curta:       String(i.descricao_curta       || ''),\n        descricao_longa:       String(i.descricao_longa       || ''),\n        unidade:               String(i.unidade               || ''),\n        categoria:             String(i.categoria             || ''),\n        preco_unitario:        Number(i.preco_unitario)       || 0,\n        fabricante:            String(i.fabricante            || ''),\n        ncm:                   String(i.ncm                  || ''),\n        unspsc_codigo_completo: String(i.unspsc_codigo_completo || ''),\n        nbsc:                  String(i.nbsc                 || ''),\n        conta_contabil:        String(i.conta_contabil        || ''),\n        natureza_contabil:     String(i.natureza_contabil     || '')\n    }\n}));"
+      },
+      "id": "node-06-parse",
+      "name": "06 — Parse Itens",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "COLE_O_ID_DA_PLANILHA_AQUI",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "BASE_ITENS",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "data_solicitacao":       "={{ $json.data_solicitacao }}",
+            "solicitante":            "={{ $json.solicitante }}",
+            "email_solicitante":      "={{ $json.email_solicitante }}",
+            "status_aprovacao":       "={{ $json.status_aprovacao }}",
+            "codigo":                 "={{ $json.codigo }}",
+            "nome":                   "={{ $json.nome }}",
+            "descricao_curta":        "={{ $json.descricao_curta }}",
+            "descricao_longa":        "={{ $json.descricao_longa }}",
+            "unidade":                "={{ $json.unidade }}",
+            "categoria":              "={{ $json.categoria }}",
+            "preco_unitario":         "={{ $json.preco_unitario }}",
+            "fabricante":             "={{ $json.fabricante }}",
+            "ncm":                    "={{ $json.ncm }}",
+            "unspsc_codigo_completo": "={{ $json.unspsc_codigo_completo }}",
+            "nbsc":                   "={{ $json.nbsc }}",
+            "conta_contabil":         "={{ $json.conta_contabil }}",
+            "natureza_contabil":      "={{ $json.natureza_contabil }}"
+          },
+          "schema": [
+            {"id": "data_solicitacao",       "displayName": "data_solicitacao",       "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "solicitante",            "displayName": "solicitante",            "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "email_solicitante",      "displayName": "email_solicitante",      "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "status_aprovacao",       "displayName": "status_aprovacao",       "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "codigo",                 "displayName": "codigo",                 "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "nome",                   "displayName": "nome",                   "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "descricao_curta",        "displayName": "descricao_curta",        "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "descricao_longa",        "displayName": "descricao_longa",        "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "unidade",                "displayName": "unidade",                "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "categoria",              "displayName": "categoria",              "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "preco_unitario",         "displayName": "preco_unitario",         "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "fabricante",             "displayName": "fabricante",             "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "ncm",                    "displayName": "ncm",                    "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "unspsc_codigo_completo", "displayName": "unspsc_codigo_completo", "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "nbsc",                   "displayName": "nbsc",                   "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "conta_contabil",         "displayName": "conta_contabil",         "required": false, "defaultMatch": false, "canBeUsedToMatch": true},
+            {"id": "natureza_contabil",      "displayName": "natureza_contabil",      "required": false, "defaultMatch": false, "canBeUsedToMatch": true}
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-07-sheets",
+      "name": "07 — Gravar no Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1560, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "CONFIGURE_AQUI",
+          "name": "Google Sheets (sua conta)"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "01 — Formulário": {
+      "main": [
+        [
+          {"node": "02a — Salvar Campos Texto", "type": "main", "index": 0},
+          {"node": "02b — Upload PDF (Files API)", "type": "main", "index": 0}
+        ]
+      ]
+    },
+    "02a — Salvar Campos Texto": {
+      "main": [[{"node": "03 — Merge Campos + File ID", "type": "main", "index": 0}]]
+    },
+    "02b — Upload PDF (Files API)": {
+      "main": [[{"node": "03 — Merge Campos + File ID", "type": "main", "index": 1}]]
+    },
+    "03 — Merge Campos + File ID": {
+      "main": [[{"node": "04 — Montar Requisição Claude", "type": "main", "index": 0}]]
+    },
+    "04 — Montar Requisição Claude": {
+      "main": [[{"node": "05 — Chamar Claude API", "type": "main", "index": 0}]]
+    },
+    "05 — Chamar Claude API": {
+      "main": [[{"node": "06 — Parse Itens", "type": "main", "index": 0}]]
+    },
+    "06 — Parse Itens": {
+      "main": [[{"node": "07 — Gravar no Google Sheets", "type": "main", "index": 0}]]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2026-03-10T00:00:00.000Z",
+  "versionId": "mdm-filesapi-v3"
+}
